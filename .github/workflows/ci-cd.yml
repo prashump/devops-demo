@@ -1,5 +1,5 @@
 
-name: CI/CD to Azure VM with Docker (password auth)
+name: CI/CD to Azure VM with Docker (password auth, robust copy)
 
 on:
   push:
@@ -9,7 +9,8 @@ on:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devops-demo
   CONTAINER_NAME: devops-demo
-  DEPLOY_DIR: apps/devops-demo
+  VM_HOME_DIR: /home/${{ secrets.VM_USER }}
+  DEPLOY_DIR: /home/${{ secrets.VM_USER }}/apps/devops-demo
 
 jobs:
   build-and-push:
@@ -49,7 +50,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Ensure the target directory exists on the VM
+      # 1) Create deploy directory on VM (absolute path)
       - name: Create deploy directory on VM
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -57,10 +58,14 @@ jobs:
           username: ${{ secrets.VM_USER }}
           password: ${{ secrets.VM_PASSWORD }}
           port: 22
+          script_stop: true
           script: |
-            mkdir -p ~/${{ env.DEPLOY_DIR }}
+            set -e
+            mkdir -p "${{ env.DEPLOY_DIR }}"
+            echo "Created/ensured: ${{ env.DEPLOY_DIR }}"
+            ls -ld "${{ env.DEPLOY_DIR }}"
 
-      # Copy docker-compose.yml to VM using password-based SCP
+      # 2) Copy docker-compose.yml to VM (use absolute target dir and trailing slash)
       - name: Copy docker-compose.yml to VM
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -68,16 +73,19 @@ jobs:
           username: ${{ secrets.VM_USER }}
           password: ${{ secrets.VM_PASSWORD }}
           port: 22
-          source: "docker-compose.yml"
-          target: "~/${{ env.DEPLOY_DIR }}/docker-compose.yml"
+          source: "./docker-compose.yml"
+          target: "${{ env.DEPLOY_DIR }}/"
           overwrite: true
+          rm: false
+          debug: true
+          timeout: "60s"
 
-      # Deploy on VM: login to GHCR, pull & run compose
+      # 3) Deploy on VM: login to GHCR, pull & run compose
       - name: Deploy via SSH (docker compose up)
         uses: appleboy/ssh-action@v1.0.0
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          GHA_TOKEN: ${{ secrets.GITHUB_TOKEN }} # pass token for GHCR pull
+          GHA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
@@ -85,9 +93,11 @@ jobs:
           port: 22
           script_stop: true
           script: |
-            # Make sure docker and compose are available
+            set -e
+
+            # Check docker & compose availability
             if ! command -v docker >/dev/null 2>&1; then
-              echo "Docker not found. Please install Docker on the VM and add your user to the docker group."
+              echo "Docker not found. Install Docker and add the user to the docker group."
               exit 1
             fi
             if ! docker compose version >/dev/null 2>&1; then
@@ -98,7 +108,10 @@ jobs:
             # Login to GHCR to pull private images
             echo "$GHA_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-            cd ~/${{ env.DEPLOY_DIR }}
+            cd "${{ env.DEPLOY_DIR }}"
+            echo "Current dir contents:"
+            ls -la
+
             # Pull latest image
             docker pull "$IMAGE_NAME:latest"
 
@@ -106,5 +119,4 @@ jobs:
             docker compose up -d
 
             # Show running containers
-            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 
