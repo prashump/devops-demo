@@ -1,5 +1,5 @@
 
-name: CI/CD to Azure VM with Docker
+name: CI/CD to Azure VM with Docker (password auth)
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devops-demo
   CONTAINER_NAME: devops-demo
+  DEPLOY_DIR: apps/devops-demo
 
 jobs:
   build-and-push:
@@ -31,7 +32,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -48,31 +49,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+      # Ensure the target directory exists on the VM
+      - name: Create deploy directory on VM
+        uses: appleboy/ssh-action@v1.0.0
         with:
-          ssh-private-key: ${{ secrets.VM_SSH_KEY }}
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          port: 22
+          script: |
+            mkdir -p ~/${{ env.DEPLOY_DIR }}
 
-      - name: Copy docker-compose to VM
-        run: |
-          scp -o StrictHostKeyChecking=no docker-compose.yml \
-            ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/apps/devops-demo/docker-compose.yml
+      # Copy docker-compose.yml to VM using password-based SCP
+      - name: Copy docker-compose.yml to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          port: 22
+          source: "docker-compose.yml"
+          target: "~/${{ env.DEPLOY_DIR }}/docker-compose.yml"
+          overwrite: true
 
-      - name: Deploy via SSH
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
-          set -e
-          # Log in to GHCR using a GitHub token (for pulls)
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      # Deploy on VM: login to GHCR, pull & run compose
+      - name: Deploy via SSH (docker compose up)
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          GHA_TOKEN: ${{ secrets.GITHUB_TOKEN }} # pass token for GHCR pull
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          port: 22
+          script_stop: true
+          script: |
+            # Make sure docker and compose are available
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Docker not found. Please install Docker on the VM and add your user to the docker group."
+              exit 1
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              echo "docker compose plugin not found. Install 'docker-compose-plugin' or use standalone docker-compose."
+              exit 1
+            fi
 
-          cd ~/apps/devops-demo
-          # Pull latest image
-          docker pull ${{ env.IMAGE_NAME }}:latest
+            # Login to GHCR to pull private images
+            echo "$GHA_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-          # Start/Update with docker compose
-          docker compose up -d
+            cd ~/${{ env.DEPLOY_DIR }}
+            # Pull latest image
+            docker pull "$IMAGE_NAME:latest"
 
-          # (Optional) Show status
-          docker ps
-          EOF
+            # Start/Update container
+            docker compose up -d
+
+            # Show running containers
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 
