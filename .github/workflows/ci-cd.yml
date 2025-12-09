@@ -78,33 +78,33 @@ jobs:
           debug: true
 
 
-- name: Deploy via SSH (docker compose up)
-  uses: appleboy/ssh-action@v1.0.0
-  with:
-    host: ${{ secrets.VM_HOST }}
-    username: ${{ secrets.VM_USER }}
-    password: ${{ secrets.VM_PASSWORD }}
-    port: 22
-    script_stop: true
-    script: |
-      set -e
-      GHCR_USER="prashump"
-      GHCR_PAT="${{ secrets.GHCR_PAT }}"
-      IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/devops-demo"
-      DEPLOY_DIR="/home/${{ secrets.VM_USER }}/apps/devops-demo"
+      - name: Deploy via SSH (docker compose up)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          port: 22
+          script_stop: true
+          script: |
+            set -e
+            GHCR_USER="prashump"
+            GHCR_PAT="${{ secrets.GHCR_PAT }}"
+            IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/devops-demo"
+            DEPLOY_DIR="/home/${{ secrets.VM_USER }}/apps/devops-demo"
 
-      docker --version || (echo "Docker missing"; exit 1)
-      docker compose version || (echo "Compose missing"; exit 1)
+            docker --version || (echo "Docker missing"; exit 1)
+            docker compose version || (echo "Compose missing"; exit 1)
 
-      if [ -z "$GHCR_PAT" ]; then
-        echo "GHCR_PAT is empty. Set a PAT with read:packages as a secret."
-        exit 1
-      fi
+            if [ -z "$GHCR_PAT" ]; then
+              echo "GHCR_PAT is empty. Set a PAT with read:packages as a secret."
+              exit 1
+            fi
 
-      docker login ghcr.io -u "$GHCR_USER" --password "$GHCR_PAT"
-      cd "$DEPLOY_DIR"
-      ls -la
-      docker pull "$IMAGE_NAME:latest"
-      docker compose up -d
-      docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+            docker login ghcr.io -u "$GHCR_USER" --password "$GHCR_PAT"
+            cd "$DEPLOY_DIR"
+            ls -la
+            docker pull "$IMAGE_NAME:latest"
+            docker compose up -d
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 
